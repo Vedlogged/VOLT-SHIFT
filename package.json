@@ -1,3 +1,15 @@
 {
-  "name":"volt-shift","private":true,"workspaces":["server","client"],"scripts":{"install:all":"npm install --workspaces","dev":"npm run dev --workspace server & npm run dev --workspace client","build":"npm run build --workspace client","start":"npm start --workspace server","test:multiplayer":"npm test --workspace server"}
+  "name": "volt-shift",
+  "private": true,
+  "workspaces": [
+    "server",
+    "client"
+  ],
+  "scripts": {
+    "install:all": "npm install --workspaces",
+    "dev": "npm run dev --workspace server & npm run dev --workspace client",
+    "build": "cd client && npm run build",
+    "start": "node server/src/index.js",
+    "test:multiplayer": "npm test --workspace server"
+  }
 }

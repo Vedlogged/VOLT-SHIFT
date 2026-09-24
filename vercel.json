@@ -1,5 +1,5 @@
 {
-  "buildCommand": "npm run build --workspace client",
+  "buildCommand": "cd client && npm install && npm run build",
   "outputDirectory": "client/dist",
   "rewrites": [
     {
