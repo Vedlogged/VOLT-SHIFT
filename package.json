@@ -8,8 +8,15 @@
   "scripts": {
     "install:all": "npm install --workspaces",
     "dev": "npm run dev --workspace server & npm run dev --workspace client",
-    "build": "cd client && npm run build",
+    "build": "node -e \"const fs=require('fs'),cp=require('child_process');if(fs.existsSync('src/main.jsx')){cp.execSync('npx vite build',{stdio:'inherit'});}else{cp.execSync('npx vite build --outDir ../dist --emptyOutDir',{cwd:'client',stdio:'inherit'});}\"",
     "start": "node server/src/index.js",
     "test:multiplayer": "npm test --workspace server"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "latest",
+    "react": "latest",
+    "react-dom": "latest",
+    "socket.io-client": "^4.8.1",
+    "vite": "latest"
   }
 }
