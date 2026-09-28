@@ -4,15 +4,44 @@ import { io } from 'socket.io-client';
 import * as Sound from './sound.js';
 import './styles.css';
 
-const DEFAULT_SERVER_URL = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
-  ? 'http://localhost:3001'
-  : 'https://volt-shift-server.onrender.com';
+const LIVE_FALLBACK_URL = 'https://a1b896a8c2ec61.lhr.life';
 
-const SERVER_URL = import.meta.env.VITE_SERVER_URL || DEFAULT_SERVER_URL;
+function getInitialServerUrl() {
+  if (typeof window === 'undefined') return 'http://localhost:3001';
+
+  // 1. Check URL query parameter: ?server=https://...
+  const params = new URLSearchParams(window.location.search);
+  const serverParam = params.get('server');
+  if (serverParam && (serverParam.startsWith('http://') || serverParam.startsWith('https://'))) {
+    localStorage.setItem('voltshift_server_url', serverParam);
+    return serverParam;
+  }
+
+  // 2. Check saved custom server URL in localStorage
+  const saved = localStorage.getItem('voltshift_server_url');
+  if (saved && (saved.startsWith('http://') || saved.startsWith('https://'))) {
+    return saved;
+  }
+
+  // 3. Check Vite build-time environment variable
+  if (import.meta.env.VITE_SERVER_URL) {
+    return import.meta.env.VITE_SERVER_URL;
+  }
+
+  // 4. Default for local development
+  if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+    return 'http://localhost:3001';
+  }
+
+  // 5. Default live public uplink for cloud deployments
+  return LIVE_FALLBACK_URL;
+}
+
 const RESUME_KEY = 'voltshift_resume_token';
 const CALLSIGN_KEY = 'voltshift_callsign';
 
 export function App() {
+  const [serverUrl, setServerUrl] = useState(getInitialServerUrl);
   const [screen, setScreen] = useState('home'); // 'home' | 'lobby' | 'game'
   const [callsign, setCallsign] = useState(() => localStorage.getItem(CALLSIGN_KEY) || 'Pilot');
   const [roomCode, setRoomCode] = useState('');
@@ -22,8 +51,10 @@ export function App() {
   const [errorToast, setErrorToast] = useState('');
   const [infoToast, setInfoToast] = useState('');
   const [howToPlayOpen, setHowToPlayOpen] = useState(false);
+  const [serverConfigOpen, setServerConfigOpen] = useState(false);
   const [isMuted, setIsMuted] = useState(() => Sound.getMuteState());
   const [floatingTexts, setFloatingTexts] = useState([]);
+  const [connectAttempts, setConnectAttempts] = useState(0);
 
   const socketRef = useRef(null);
   const keysRef = useRef({});
@@ -39,7 +70,7 @@ export function App() {
   const showToast = (msg, isError = true) => {
     if (isError) {
       setErrorToast(msg);
-      setTimeout(() => setErrorToast(''), 4500);
+      setTimeout(() => setErrorToast(''), 5000);
     } else {
       setInfoToast(msg);
       setTimeout(() => setInfoToast(''), 3500);
@@ -54,19 +85,30 @@ export function App() {
   // Connect to Authoritative Socket.IO Server
   useEffect(() => {
     const storedToken = localStorage.getItem(RESUME_KEY);
-    const socket = io(SERVER_URL, {
+    const cleanUrl = serverUrl.replace(/\/+$/, '');
+
+    const socket = io(cleanUrl, {
       transports: ['websocket', 'polling'],
       autoConnect: true,
+      reconnectionAttempts: 20,
+      reconnectionDelay: 1000,
+      timeout: 10000,
       auth: { resumeToken: storedToken || undefined },
     });
     socketRef.current = socket;
 
     socket.on('connect', () => {
       setConnected(true);
+      setConnectAttempts(0);
     });
 
     socket.on('disconnect', () => {
       setConnected(false);
+    });
+
+    socket.on('connect_error', () => {
+      setConnected(false);
+      setConnectAttempts((prev) => prev + 1);
     });
 
     socket.on('resume', (res) => {
@@ -101,7 +143,7 @@ export function App() {
     return () => {
       socket.disconnect();
     };
-  }, []);
+  }, [serverUrl]);
 
   // Event Sound & Floating Feedback Triggering
   useEffect(() => {
@@ -165,19 +207,51 @@ export function App() {
     }, 1800);
   };
 
-  const emitPromise = (event, payload) => {
+  // Robust Network Request Wrapper with Timeout
+  const emitPromise = (event, payload, timeoutMs = 5000) => {
     return new Promise((resolve) => {
-      if (!socketRef.current) return resolve({ ok: false });
-      socketRef.current.emit(event, payload || {}, (res) => resolve(res || { ok: false }));
+      if (!socketRef.current || !socketRef.current.connected) {
+        return resolve({
+          ok: false,
+          error: 'DISCONNECTED',
+          reason: 'Cannot connect to server. Please check backend uplink in settings.',
+        });
+      }
+
+      let resolved = false;
+      const timer = setTimeout(() => {
+        if (!resolved) {
+          resolved = true;
+          resolve({
+            ok: false,
+            error: 'TIMEOUT',
+            reason: 'Server response timed out. Please check backend status.',
+          });
+        }
+      }, timeoutMs);
+
+      socketRef.current.emit(event, payload || {}, (res) => {
+        if (!resolved) {
+          resolved = true;
+          clearTimeout(timer);
+          resolve(res || { ok: false });
+        }
+      });
     });
   };
 
   // User Actions
   const handleCreateRoom = async () => {
     Sound.playClick();
+    if (!connected) {
+      showToast(`Cannot reach backend at ${serverUrl}. Opening uplink settings...`);
+      setServerConfigOpen(true);
+      return;
+    }
+
     const res = await emitPromise('room:create', { name: callsign });
     if (!res.ok) {
-      showToast('Could not create room. Try again.');
+      showToast(res.reason || 'Could not create room. Try again.');
       return;
     }
     if (res.token) localStorage.setItem(RESUME_KEY, res.token);
@@ -188,6 +262,12 @@ export function App() {
 
   const handleJoinRoom = async (codeToJoin = roomCode) => {
     Sound.playClick();
+    if (!connected) {
+      showToast(`Cannot reach backend at ${serverUrl}. Opening uplink settings...`);
+      setServerConfigOpen(true);
+      return;
+    }
+
     const cleanCode = String(codeToJoin || '').trim().toUpperCase();
     if (!cleanCode || cleanCode.length < 4) {
       showToast('Please enter a valid 4-character room code.');
@@ -201,8 +281,10 @@ export function App() {
         ROOM_FULL: 'This sector already has 2 active pilots.',
         GAME_ALREADY_STARTED: 'Match already in progress in this sector.',
         SERVER_AT_CAPACITY: 'Server at full capacity. Please try again shortly.',
+        DISCONNECTED: 'Server disconnected. Please configure backend uplink.',
+        TIMEOUT: 'Server connection timed out.',
       };
-      showToast(errorMessages[res.error] || 'Unable to join room.');
+      showToast(res.reason || errorMessages[res.error] || 'Unable to join room.');
       return;
     }
 
@@ -319,6 +401,14 @@ export function App() {
       {/* Background Cyber Grid */}
       <div className="cyber-grid-bg" />
 
+      {/* Disconnected Alert Banner */}
+      {!connected && (
+        <div className="offline-alert-bar" onClick={() => setServerConfigOpen(true)}>
+          <span>⚠️ BACKEND DISCONNECTED: Unable to reach {serverUrl}</span>
+          <u>CONFIGURE UPLINK →</u>
+        </div>
+      )}
+
       {/* Global Header Bar */}
       <header className="global-header">
         <div className="brand" onClick={() => screen === 'home' && null}>
@@ -342,12 +432,33 @@ export function App() {
           >
             HOW TO PLAY
           </button>
-          <div className="status-pill">
+          <div
+            className="status-pill clickable"
+            onClick={() => setServerConfigOpen(true)}
+            title="Click to view or edit server connection settings"
+          >
             <span className={`status-dot ${connected ? 'online' : 'connecting'}`} />
             {connected ? 'CONNECTED' : 'RECONNECTING...'}
           </div>
         </div>
       </header>
+
+      {/* Disconnection / Server Target Warning Banner */}
+      {!connected && (
+        <div className="offline-alert-bar">
+          <div className="offline-alert-content">
+            <span className="pulsing-warn-icon">⚡</span>
+            <span>Connecting to backend: <code>{serverUrl}</code></span>
+            <button
+              type="button"
+              className="alert-config-btn"
+              onClick={() => setServerConfigOpen(true)}
+            >
+              Configure Target
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Floating Notifications / Toasts */}
       {errorToast && (
@@ -417,6 +528,19 @@ export function App() {
       {/* Interactive How To Play Mini-Tutorial Modal */}
       {howToPlayOpen && (
         <HowToPlayModal onClose={() => setHowToPlayOpen(false)} />
+      )}
+
+      {/* Server Uplink Configuration Modal */}
+      {serverConfigOpen && (
+        <ServerConfigModal
+          currentUrl={serverUrl}
+          onSaveUrl={(newUrl) => {
+            localStorage.setItem('voltshift_server_url', newUrl);
+            setServerUrl(newUrl);
+            showToast(`Backend target updated to ${newUrl}`, false);
+          }}
+          onClose={() => setServerConfigOpen(false)}
+        />
       )}
     </div>
   );
@@ -1208,6 +1332,158 @@ function HowToPlayModal({ onClose }) {
               READY FOR COMBAT — ENTER ARENA
             </button>
           )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ----------------- SERVER CONFIG MODAL -----------------
+function ServerConfigModal({ currentUrl, onSaveUrl, onClose }) {
+  const [inputUrl, setInputUrl] = useState(currentUrl);
+  const [testStatus, setTestStatus] = useState(null);
+  const [testing, setTesting] = useState(false);
+
+  const testHealth = async (urlToTest = inputUrl) => {
+    setTesting(true);
+    setTestStatus(null);
+    const cleanUrl = urlToTest.trim().replace(/\/+$/, '');
+    const startTime = performance.now();
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 4000);
+      const res = await fetch(`${cleanUrl}/health`, { signal: controller.signal });
+      clearTimeout(timeoutId);
+      const latency = Math.round(performance.now() - startTime);
+      if (res.ok) {
+        const data = await res.json();
+        setTestStatus({ ok: true, latency, data });
+      } else {
+        setTestStatus({ ok: false, error: `HTTP ${res.status} ${res.statusText}` });
+      }
+    } catch (err) {
+      setTestStatus({
+        ok: false,
+        error: err.name === 'AbortError' ? 'Connection timed out (4s)' : (err.message || 'Network error'),
+      });
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const handleSave = () => {
+    const cleanUrl = inputUrl.trim().replace(/\/+$/, '');
+    if (!cleanUrl) return;
+    onSaveUrl(cleanUrl);
+    onClose();
+  };
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal-content server-config-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <div>
+            <div className="eyebrow">NETWORK UPLINK CONFIGURATION</div>
+            <h2>MULTIPLAYER BACKEND TARGET</h2>
+          </div>
+          <button className="close-btn" onClick={onClose}>×</button>
+        </div>
+
+        <div className="config-body">
+          <p className="config-desc">
+            VOLT//SHIFT requires an active Node.js + WebSocket backend for real-time multiplayer state synchronization.
+          </p>
+
+          <label className="input-label">
+            SERVER URL
+            <input
+              type="text"
+              className="cyber-input"
+              value={inputUrl}
+              onChange={(e) => {
+                setInputUrl(e.target.value);
+                setTestStatus(null);
+              }}
+              placeholder="https://a1b896a8c2ec61.lhr.life"
+            />
+          </label>
+
+          {/* Quick Presets */}
+          <div className="preset-buttons">
+            <span className="preset-label">QUICK TARGETS:</span>
+            <button
+              type="button"
+              className="secondary-btn small-btn"
+              onClick={() => {
+                const u = LIVE_FALLBACK_URL;
+                setInputUrl(u);
+                testHealth(u);
+              }}
+            >
+              ⚡ Live Cloud Uplink
+            </button>
+            <button
+              type="button"
+              className="secondary-btn small-btn"
+              onClick={() => {
+                const u = 'https://volt-shift-server.onrender.com';
+                setInputUrl(u);
+                testHealth(u);
+              }}
+            >
+              🌐 Render Service
+            </button>
+            <button
+              type="button"
+              className="secondary-btn small-btn"
+              onClick={() => {
+                const u = 'http://localhost:3001';
+                setInputUrl(u);
+                testHealth(u);
+              }}
+            >
+              💻 Localhost (3001)
+            </button>
+          </div>
+
+          {/* Health Check Test Result */}
+          {testStatus && (
+            <div className={`health-result-card ${testStatus.ok ? 'health-ok' : 'health-fail'}`}>
+              <div className="health-header">
+                <b>{testStatus.ok ? '✓ SERVER ONLINE & HEALTHY' : '✗ CONNECTION FAILED'}</b>
+                {testStatus.ok && <span className="latency-badge">{testStatus.latency}ms ping</span>}
+              </div>
+              {testStatus.ok ? (
+                <div className="health-details">
+                  <span>Service: {testStatus.data?.service || 'volt-shift-server'}</span>
+                  <span>Version: {testStatus.data?.version || '1.2.0'}</span>
+                  <span>Active Rooms: {testStatus.data?.activeRooms ?? 0}</span>
+                </div>
+              ) : (
+                <div className="health-error-text">
+                  {testStatus.error}. Check that the backend is running and permits CORS.
+                </div>
+              )}
+            </div>
+          )}
+
+          <div className="config-actions">
+            <button
+              type="button"
+              className="secondary-btn"
+              onClick={() => testHealth(inputUrl)}
+              disabled={testing}
+            >
+              {testing ? 'TESTING...' : '🔍 TEST HEALTH'}
+            </button>
+            <button
+              type="button"
+              className="primary-btn"
+              onClick={handleSave}
+            >
+              SAVE & CONNECT
+            </button>
+          </div>
         </div>
       </div>
     </div>

@@ -1692,3 +1692,173 @@ button:active {
     display: none; /* On desktop, use keyboard & D-pad */
   }
 }
+
+/* ----------------- CONNECTION STATUS & SERVER CONFIG ----------------- */
+.status-pill.clickable {
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.status-pill.clickable:hover {
+  background: rgba(0, 240, 255, 0.15);
+  border-color: var(--cyan);
+  box-shadow: 0 0 10px var(--cyan-glow);
+  transform: translateY(-1px);
+}
+
+.offline-alert-bar {
+  background: linear-gradient(90deg, rgba(255, 153, 0, 0.15), rgba(255, 42, 109, 0.15));
+  border-bottom: 1px solid rgba(255, 153, 0, 0.4);
+  padding: 8px 16px;
+  position: relative;
+  z-index: 90;
+  animation: fadeIn 0.3s ease-out;
+}
+
+.offline-alert-content {
+  max-width: 1200px;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: #ffb84d;
+}
+
+.offline-alert-content code {
+  background: rgba(0, 0, 0, 0.4);
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: var(--cyan);
+  word-break: break-all;
+}
+
+.pulsing-warn-icon {
+  display: inline-block;
+  animation: pulseIcon 1.5s infinite ease-in-out;
+}
+
+@keyframes pulseIcon {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.25); opacity: 0.6; }
+}
+
+.alert-config-btn {
+  background: rgba(0, 240, 255, 0.1);
+  border: 1px solid var(--cyan);
+  color: var(--cyan);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  transition: all 0.2s ease;
+}
+
+.alert-config-btn:hover {
+  background: var(--cyan);
+  color: var(--bg-dark);
+  box-shadow: 0 0 10px var(--cyan-glow);
+}
+
+/* Server Uplink Config Modal */
+.server-config-modal {
+  max-width: 580px;
+  width: 92%;
+  background: var(--bg-card);
+  border: 1px solid var(--cyan);
+  box-shadow: 0 0 30px rgba(0, 240, 255, 0.25);
+}
+
+.config-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-top: 14px;
+}
+
+.config-desc {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.preset-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.preset-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-dim);
+  font-weight: 700;
+  margin-right: 4px;
+}
+
+.health-result-card {
+  padding: 12px 14px;
+  border-radius: 6px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  transition: all 0.25s ease;
+}
+
+.health-result-card.health-ok {
+  background: rgba(5, 255, 161, 0.08);
+  border: 1px solid rgba(5, 255, 161, 0.4);
+  color: var(--green);
+}
+
+.health-result-card.health-fail {
+  background: rgba(255, 42, 109, 0.08);
+  border: 1px solid rgba(255, 42, 109, 0.4);
+  color: var(--magenta);
+}
+
+.health-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.latency-badge {
+  background: rgba(0, 0, 0, 0.45);
+  color: var(--cyan);
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 700;
+  border: 1px solid rgba(0, 240, 255, 0.3);
+}
+
+.health-details {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.health-error-text {
+  margin-top: 6px;
+  font-size: 11px;
+  color: #ff6b91;
+  line-height: 1.4;
+}
+
+.config-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 8px;
+}

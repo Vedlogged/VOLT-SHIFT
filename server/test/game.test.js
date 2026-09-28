@@ -108,8 +108,8 @@ describe('VOLT//SHIFT Game Engine Unit Tests', () => {
     room.game.status = 'playing';
     room.game.players.p1.x = 10;
     room.game.players.p1.y = 10;
-    // Set node far away
-    room.game.nodes[0] = { id: 1, x: 80, y: 50, type: 'normal', state: 'available', owner: null };
+    // Set only a distant node so no other node is nearby
+    room.game.nodes = [{ id: 1, x: 80, y: 50, type: 'normal', state: 'available', owner: null }];
 
     const res = capture(room, 'p1');
     assert.equal(res.ok, false);

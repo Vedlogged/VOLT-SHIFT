@@ -12,13 +12,21 @@
                     HTTPS / WSS
                          │
                          ▼
-  [ RENDER WEBSOCKET BACKEND: https://volt-shift-server.onrender.com ]
+  [ MULTIPLAYER BACKEND TARGET: https://a1b896a8c2ec61.lhr.life / Render ]
                          │
          ┌───────────────┴───────────────┐
          ▼                               ▼
    20Hz Authoritative             /health Monitor
       Tick Loop                   Uptime & Metrics
 ```
+
+### Dynamic Backend Resolution Hierarchy
+The client automatically resolves the backend connection using the following order of precedence:
+1. **URL Parameter:** `?server=https://your-backend-domain.com` (useful for instant cross-device testing with custom backend)
+2. **Local Storage:** Configurable in-game via the header connection pill (`CONNECTED` / `RECONNECTING...`)
+3. **Build Environment Variable:** `VITE_SERVER_URL`
+4. **Localhost fallback:** `http://localhost:3001` when running locally
+5. **Live Cloud Uplink fallback:** `https://a1b896a8c2ec61.lhr.life` for public cloud deployments
 
 ---
 
