@@ -9,7 +9,7 @@
     "install:all": "npm install --workspaces",
     "dev": "npm run dev --workspace server & npm run dev --workspace client",
     "build": "node -e \"const fs=require('fs'),cp=require('child_process');if(fs.existsSync('src/main.jsx')){cp.execSync('npx vite build',{stdio:'inherit'});}else{cp.execSync('npx vite build --outDir ../dist --emptyOutDir',{cwd:'client',stdio:'inherit'});}\"",
-    "start": "node server/src/index.js",
+    "start:server": "node server/src/index.js",
     "test:multiplayer": "npm test --workspace server"
   },
   "dependencies": {
