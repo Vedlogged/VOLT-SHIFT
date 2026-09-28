@@ -108,7 +108,7 @@ io.on('connection', (socket) => {
   }
 
   // Create a new room
-  socket.on('room:create', ({ name = 'Player' } = {}, ack) => {
+  socket.on('room:create', (payload = {}, ack) => {
     try {
       if (rooms.size >= MAX_ACTIVE_ROOMS) {
         return ack?.({ ok: false, error: 'SERVER_AT_CAPACITY' });
@@ -121,7 +121,8 @@ io.on('connection', (socket) => {
         attempts++;
       } while (rooms.has(roomCode) && attempts < 100);
 
-      const safeName = String(name || '').trim().replace(/[<>]/g, '').slice(0, 16) || 'Player 1';
+      const rawName = payload?.name || payload?.callsign || 'Player 1';
+      const safeName = String(rawName).trim().replace(/[<>]/g, '').slice(0, 16) || 'Player 1';
       const slot = 'p1';
       const token = randomBytes(16).toString('hex');
 
@@ -157,8 +158,9 @@ io.on('connection', (socket) => {
   });
 
   // Join an existing room
-  socket.on('room:join', ({ code: rawCode, name = 'Player' } = {}, ack) => {
+  socket.on('room:join', (payload = {}, ack) => {
     try {
+      const rawCode = payload?.code || payload?.roomCode;
       const roomCode = String(rawCode || '').trim().toUpperCase();
       const room = rooms.get(roomCode);
 
@@ -176,7 +178,8 @@ io.on('connection', (socket) => {
       }
 
       const defaultName = slot === 'p2' ? 'Player 2' : 'Player 1';
-      const safeName = String(name || '').trim().replace(/[<>]/g, '').slice(0, 16) || defaultName;
+      const rawName = payload?.name || payload?.callsign || defaultName;
+      const safeName = String(rawName).trim().replace(/[<>]/g, '').slice(0, 16) || defaultName;
       const token = randomBytes(16).toString('hex');
 
       room.players[slot] = {
