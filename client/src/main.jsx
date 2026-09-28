@@ -419,6 +419,7 @@ export function App() {
         <GameScreen
           gs={gs}
           roomCode={serverState?.roomCode}
+          players={players}
           mySlot={mySlot}
           me={me}
           opponent={opponent}
@@ -672,16 +673,17 @@ function LobbyScreen({
 function GameScreen({
   gs,
   roomCode,
+  players = {},
   mySlot,
   me,
   opponent,
   otherSlot,
-  rematchVotes,
+  rematchVotes = [],
   onDirectionInput,
   onCapture,
   onRematch,
   onLeave,
-  floatingTexts,
+  floatingTexts = [],
 }) {
   const [now, setNow] = useState(Date.now());
   const [joystickActive, setJoystickActive] = useState(false);
@@ -1432,8 +1434,51 @@ function ServerConfigModal({ currentUrl, onSaveUrl, onClose }) {
   );
 }
 
+// Production UI Crash Guard
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+  componentDidCatch(error, info) {
+    console.error('VOLT//SHIFT UI Crash Caught by ErrorBoundary:', error, info);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: '#050711', color: '#f0f4ff', fontFamily: 'Space Grotesk, sans-serif', padding: '20px', textAlign: 'center' }}>
+          <h1 style={{ color: '#00f0ff', letterSpacing: '2px', marginBottom: '12px' }}>VOLT<span>//</span>SHIFT</h1>
+          <div style={{ background: 'rgba(12, 17, 34, 0.85)', border: '1px solid #ff2a6d', borderRadius: '8px', padding: '24px', maxWidth: '480px', width: '100%', boxShadow: '0 0 20px rgba(255, 42, 109, 0.3)' }}>
+            <h3 style={{ color: '#ff2a6d', marginBottom: '8px' }}>SESSION INTERRUPTED</h3>
+            <p style={{ color: '#8b95b5', fontSize: '13px', marginBottom: '20px' }}>
+              {this.state.error?.message || 'A visual render error occurred.'}
+            </p>
+            <button
+              style={{ background: '#00f0ff', color: '#050711', border: 'none', padding: '12px 24px', borderRadius: '4px', fontWeight: 'bold', cursor: 'pointer', fontFamily: 'inherit' }}
+              onClick={() => {
+                localStorage.removeItem(RESUME_KEY);
+                window.location.href = window.location.origin + window.location.pathname;
+              }}
+            >
+              RETURN TO BASE
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 // Render root
 const rootElement = document.getElementById('root');
 if (rootElement) {
-  createRoot(rootElement).render(<App />);
+  createRoot(rootElement).render(
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
+  );
 }
