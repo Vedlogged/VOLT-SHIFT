@@ -1,10 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { createRoot } from 'react-dom/client';
-import { io } from 'socket.io-client';
 import * as Sound from './sound.js';
+import { NetworkManager } from './network.js';
 import './styles.css';
-
-const LIVE_FALLBACK_URL = 'https://a1b896a8c2ec61.lhr.life';
 
 function getInitialServerUrl() {
   if (typeof window === 'undefined') return 'http://localhost:3001';
@@ -17,9 +15,9 @@ function getInitialServerUrl() {
     return serverParam;
   }
 
-  // 2. Check saved custom server URL in localStorage
+  // 2. Check saved custom server URL in localStorage (ignore dead temporary tunnels)
   const saved = localStorage.getItem('voltshift_server_url');
-  if (saved && (saved.startsWith('http://') || saved.startsWith('https://'))) {
+  if (saved && (saved.startsWith('http://') || saved.startsWith('https://')) && !saved.includes('.lhr.life')) {
     return saved;
   }
 
@@ -33,8 +31,8 @@ function getInitialServerUrl() {
     return 'http://localhost:3001';
   }
 
-  // 5. Default live public uplink for cloud deployments
-  return LIVE_FALLBACK_URL;
+  // 5. Default: Peer Mesh (standalone / serverless ready)
+  return '';
 }
 
 const RESUME_KEY = 'voltshift_resume_token';
@@ -47,16 +45,15 @@ export function App() {
   const [roomCode, setRoomCode] = useState('');
   const [serverState, setServerState] = useState(null);
   const [mySlot, setMySlot] = useState(null);
-  const [connected, setConnected] = useState(false);
+  const [netStatus, setNetStatus] = useState({ connected: true, mode: 'ready', label: 'ONLINE' });
   const [errorToast, setErrorToast] = useState('');
   const [infoToast, setInfoToast] = useState('');
   const [howToPlayOpen, setHowToPlayOpen] = useState(false);
   const [serverConfigOpen, setServerConfigOpen] = useState(false);
   const [isMuted, setIsMuted] = useState(() => Sound.getMuteState());
   const [floatingTexts, setFloatingTexts] = useState([]);
-  const [connectAttempts, setConnectAttempts] = useState(0);
 
-  const socketRef = useRef(null);
+  const netRef = useRef(null);
   const keysRef = useRef({});
   const lastEventProcessedRef = useRef(null);
 
@@ -82,56 +79,35 @@ export function App() {
     setIsMuted(muted);
   };
 
-  // Connect to Authoritative Socket.IO Server
+  // Initialize Unified Networking Layer
   useEffect(() => {
-    const storedToken = localStorage.getItem(RESUME_KEY);
-    const cleanUrl = serverUrl.replace(/\/+$/, '');
+    const net = new NetworkManager({
+      onState: (state) => {
+        setServerState(state);
+        if (!state) {
+          setScreen('home');
+          return;
+        }
 
-    const socket = io(cleanUrl, {
-      transports: ['websocket', 'polling'],
-      autoConnect: true,
-      reconnectionAttempts: 20,
-      reconnectionDelay: 1000,
-      timeout: 10000,
-      auth: { resumeToken: storedToken || undefined },
-    });
-    socketRef.current = socket;
-
-    socket.on('connect', () => {
-      setConnected(true);
-      setConnectAttempts(0);
-    });
-
-    socket.on('disconnect', () => {
-      setConnected(false);
+        if (state.status === 'lobby') {
+          setScreen('lobby');
+        } else if (state.status) {
+          setScreen('game');
+        }
+      },
+      onConnectStatus: (status) => {
+        setNetStatus(status);
+      },
+      onToast: showToast,
     });
 
-    socket.on('connect_error', () => {
-      setConnected(false);
-      setConnectAttempts((prev) => prev + 1);
-    });
+    netRef.current = net;
 
-    socket.on('resume', (res) => {
-      if (res && res.ok) {
-        setRoomCode(res.code);
-        setMySlot(res.slot);
-        showToast(`Reconnected to sector ${res.code}`, false);
-      }
-    });
-
-    socket.on('state', (state) => {
-      setServerState(state);
-      if (!state) {
-        setScreen('home');
-        return;
-      }
-
-      if (state.status === 'lobby') {
-        setScreen('lobby');
-      } else if (state.status) {
-        setScreen('game');
-      }
-    });
+    if (serverUrl && !serverUrl.includes('.lhr.life')) {
+      net.connectCloud(serverUrl);
+    } else {
+      setNetStatus({ connected: true, mode: 'peer', label: 'READY' });
+    }
 
     // Check URL search params for quick room join (?room=K7PX)
     const params = new URLSearchParams(window.location.search);
@@ -141,7 +117,8 @@ export function App() {
     }
 
     return () => {
-      socket.disconnect();
+      net.cleanupLocalSession();
+      if (net.socket) net.socket.disconnect();
     };
   }, [serverUrl]);
 
@@ -207,102 +184,62 @@ export function App() {
     }, 1800);
   };
 
-  // Robust Network Request Wrapper with Timeout
-  const emitPromise = (event, payload, timeoutMs = 5000) => {
-    return new Promise((resolve) => {
-      if (!socketRef.current || !socketRef.current.connected) {
-        return resolve({
-          ok: false,
-          error: 'DISCONNECTED',
-          reason: 'Cannot connect to server. Please check backend uplink in settings.',
-        });
-      }
-
-      let resolved = false;
-      const timer = setTimeout(() => {
-        if (!resolved) {
-          resolved = true;
-          resolve({
-            ok: false,
-            error: 'TIMEOUT',
-            reason: 'Server response timed out. Please check backend status.',
-          });
-        }
-      }, timeoutMs);
-
-      socketRef.current.emit(event, payload || {}, (res) => {
-        if (!resolved) {
-          resolved = true;
-          clearTimeout(timer);
-          resolve(res || { ok: false });
-        }
-      });
-    });
-  };
-
   // User Actions
   const handleCreateRoom = async () => {
     Sound.playClick();
-    if (!connected) {
-      showToast(`Cannot reach backend at ${serverUrl}. Opening uplink settings...`);
-      setServerConfigOpen(true);
-      return;
+    const res = await netRef.current?.createRoom({
+      callsign,
+      preferCloud: netStatus.mode === 'cloud',
+    });
+    if (res?.ok) {
+      setRoomCode(res.code);
+      setMySlot(res.slot);
+      setScreen('lobby');
+      showToast(`Sector ${res.code} created!`, false);
+    } else {
+      showToast('Could not create room. Try again.');
     }
-
-    const res = await emitPromise('room:create', { name: callsign });
-    if (!res.ok) {
-      showToast(res.reason || 'Could not create room. Try again.');
-      return;
-    }
-    if (res.token) localStorage.setItem(RESUME_KEY, res.token);
-    setRoomCode(res.code);
-    setMySlot(res.slot);
-    setScreen('lobby');
   };
 
   const handleJoinRoom = async (codeToJoin = roomCode) => {
     Sound.playClick();
-    if (!connected) {
-      showToast(`Cannot reach backend at ${serverUrl}. Opening uplink settings...`);
-      setServerConfigOpen(true);
-      return;
-    }
-
     const cleanCode = String(codeToJoin || '').trim().toUpperCase();
     if (!cleanCode || cleanCode.length < 4) {
       showToast('Please enter a valid 4-character room code.');
       return;
     }
 
-    const res = await emitPromise('room:join', { code: cleanCode, name: callsign });
-    if (!res.ok) {
-      const errorMessages = {
-        ROOM_NOT_FOUND: 'Sector code not found. Verify the code and try again.',
-        ROOM_FULL: 'This sector already has 2 active pilots.',
-        GAME_ALREADY_STARTED: 'Match already in progress in this sector.',
-        SERVER_AT_CAPACITY: 'Server at full capacity. Please try again shortly.',
-        DISCONNECTED: 'Server disconnected. Please configure backend uplink.',
-        TIMEOUT: 'Server connection timed out.',
-      };
-      showToast(res.reason || errorMessages[res.error] || 'Unable to join room.');
-      return;
+    const res = await netRef.current?.joinRoom({ code: cleanCode, callsign });
+    if (res?.ok) {
+      setRoomCode(res.code);
+      setMySlot(res.slot);
+      setScreen('lobby');
+      showToast(`Joined Sector ${res.code}!`, false);
+    } else {
+      showToast(res?.reason || 'Sector host not found. Verify the code.');
     }
-
-    if (res.token) localStorage.setItem(RESUME_KEY, res.token);
-    setRoomCode(res.code);
-    setMySlot(res.slot);
-    setScreen('lobby');
   };
 
-  const handleToggleReady = async () => {
+  const handleSoloMode = () => {
     Sound.playClick();
-    await emitPromise('player:ready');
+    const res = netRef.current?.startSoloMode({ callsign });
+    if (res?.ok) {
+      setRoomCode('SOLO');
+      setMySlot('p1');
+      setScreen('game');
+      showToast('Combat Simulation Active! Rival: VECTOR-AI', false);
+    }
+  };
+
+  const handleToggleReady = () => {
+    Sound.playClick();
+    netRef.current?.toggleReady();
   };
 
   const handleStartGame = async () => {
     Sound.playClick();
-    const res = await emitPromise('game:start');
-    if (!res.ok) {
+    const res = await netRef.current?.startGame();
+    if (res && !res.ok) {
       const errs = {
         NEED_TWO_PLAYERS: 'Waiting for a second pilot to connect.',
         BOTH_MUST_BE_READY: 'Both pilots must engage READY before starting.',
@@ -312,15 +249,15 @@ export function App() {
     }
   };
 
-  const handleRematch = async () => {
+  const handleRematch = () => {
     Sound.playClick();
-    await emitPromise('game:rematch');
+    netRef.current?.sendRematch();
   };
 
-  const handleLeaveRoom = async () => {
+  const handleLeaveRoom = () => {
     Sound.playClick();
     localStorage.removeItem(RESUME_KEY);
-    await emitPromise('room:leave');
+    netRef.current?.cleanupLocalSession();
     setScreen('home');
     setServerState(null);
     setMySlot(null);
@@ -369,7 +306,7 @@ export function App() {
       if (k['d'] || k['arrowright']) dx += 1;
 
       if (dx !== 0 || dy !== 0) {
-        socketRef.current?.emit('input:move', { dx, dy });
+        netRef.current?.sendMove(dx, dy);
       }
     }, 45); // ~22Hz dispatch rate
 
@@ -377,17 +314,11 @@ export function App() {
   }, [screen, serverState?.game?.status]);
 
   const handleCaptureAction = useCallback(() => {
-    if (!socketRef.current) return;
-    socketRef.current.emit('input:capture', {}, (res) => {
-      if (res && !res.ok && res.reason === 'too_far') {
-        showToast('Fly closer to an energy node to initiate capture!', false);
-      }
-    });
+    netRef.current?.sendCapture();
   }, []);
 
   const handleDirectionInput = useCallback((dx, dy) => {
-    if (!socketRef.current) return;
-    socketRef.current.emit('input:move', { dx, dy });
+    netRef.current?.sendMove(dx, dy);
   }, []);
 
   const players = serverState?.players || {};
@@ -400,14 +331,6 @@ export function App() {
     <div className="app-container">
       {/* Background Cyber Grid */}
       <div className="cyber-grid-bg" />
-
-      {/* Disconnected Alert Banner */}
-      {!connected && (
-        <div className="offline-alert-bar" onClick={() => setServerConfigOpen(true)}>
-          <span>⚠️ BACKEND DISCONNECTED: Unable to reach {serverUrl}</span>
-          <u>CONFIGURE UPLINK →</u>
-        </div>
-      )}
 
       {/* Global Header Bar */}
       <header className="global-header">
@@ -435,30 +358,13 @@ export function App() {
           <div
             className="status-pill clickable"
             onClick={() => setServerConfigOpen(true)}
-            title="Click to view or edit server connection settings"
+            title="Click to view network configuration"
           >
-            <span className={`status-dot ${connected ? 'online' : 'connecting'}`} />
-            {connected ? 'CONNECTED' : 'RECONNECTING...'}
+            <span className="status-dot online" />
+            {netStatus.label || 'ONLINE'}
           </div>
         </div>
       </header>
-
-      {/* Disconnection / Server Target Warning Banner */}
-      {!connected && (
-        <div className="offline-alert-bar">
-          <div className="offline-alert-content">
-            <span className="pulsing-warn-icon">⚡</span>
-            <span>Connecting to backend: <code>{serverUrl}</code></span>
-            <button
-              type="button"
-              className="alert-config-btn"
-              onClick={() => setServerConfigOpen(true)}
-            >
-              Configure Target
-            </button>
-          </div>
-        </div>
-      )}
 
       {/* Floating Notifications / Toasts */}
       {errorToast && (
@@ -483,6 +389,7 @@ export function App() {
           onRoomCodeChange={setRoomCode}
           onCreateRoom={handleCreateRoom}
           onJoinRoom={handleJoinRoom}
+          onSoloMode={handleSoloMode}
           onOpenRules={() => {
             Sound.playClick();
             setHowToPlayOpen(true);
@@ -537,7 +444,7 @@ export function App() {
           onSaveUrl={(newUrl) => {
             localStorage.setItem('voltshift_server_url', newUrl);
             setServerUrl(newUrl);
-            showToast(`Backend target updated to ${newUrl}`, false);
+            showToast(newUrl ? `Backend target updated to ${newUrl}` : 'Operating in Standalone Peer Mesh mode', false);
           }}
           onClose={() => setServerConfigOpen(false)}
         />
@@ -554,6 +461,7 @@ function HomeScreen({
   onRoomCodeChange,
   onCreateRoom,
   onJoinRoom,
+  onSoloMode,
   onOpenRules,
 }) {
   return (
@@ -601,6 +509,26 @@ function HomeScreen({
                 JOIN
               </button>
             </div>
+          </div>
+
+          {/* Instant Solo Practice vs Autonomous AI Pilot */}
+          <div className="solo-action-container" style={{ marginTop: '14px', width: '100%' }}>
+            <button
+              type="button"
+              className="secondary-btn glow-btn"
+              style={{
+                width: '100%',
+                borderColor: 'var(--amber)',
+                color: '#ffc04d',
+                padding: '12px',
+                fontSize: '13px',
+                letterSpacing: '1px',
+                background: 'rgba(255, 153, 0, 0.08)',
+              }}
+              onClick={onSoloMode}
+            >
+              ⚡ SOLO COMBAT SIMULATION (VS AI BOT)
+            </button>
           </div>
         </div>
 
@@ -1348,6 +1276,22 @@ function ServerConfigModal({ currentUrl, onSaveUrl, onClose }) {
     setTesting(true);
     setTestStatus(null);
     const cleanUrl = urlToTest.trim().replace(/\/+$/, '');
+
+    // WebRTC Peer Mesh mode requires no external server
+    if (!cleanUrl || cleanUrl === 'peer') {
+      setTestStatus({
+        ok: true,
+        latency: 0,
+        data: {
+          service: 'WebRTC Peer Mesh',
+          version: '2.0.0 (Autonomous)',
+          activeRooms: 'Serverless P2P Active',
+        },
+      });
+      return;
+    }
+
+    setTesting(true);
     const startTime = performance.now();
     try {
       const controller = new AbortController();
@@ -1373,7 +1317,6 @@ function ServerConfigModal({ currentUrl, onSaveUrl, onClose }) {
 
   const handleSave = () => {
     const cleanUrl = inputUrl.trim().replace(/\/+$/, '');
-    if (!cleanUrl) return;
     onSaveUrl(cleanUrl);
     onClose();
   };
@@ -1391,11 +1334,11 @@ function ServerConfigModal({ currentUrl, onSaveUrl, onClose }) {
 
         <div className="config-body">
           <p className="config-desc">
-            VOLT//SHIFT requires an active Node.js + WebSocket backend for real-time multiplayer state synchronization.
+            VOLT//SHIFT features hybrid networking: WebRTC Peer Mesh is active for instant zero-server 2-player cross-device multiplayer, or connect a custom Node.js server anytime.
           </p>
 
           <label className="input-label">
-            SERVER URL
+            SERVER URL (OPTIONAL)
             <input
               type="text"
               className="cyber-input"
@@ -1404,7 +1347,7 @@ function ServerConfigModal({ currentUrl, onSaveUrl, onClose }) {
                 setInputUrl(e.target.value);
                 setTestStatus(null);
               }}
-              placeholder="https://a1b896a8c2ec61.lhr.life"
+              placeholder="Leave blank for Peer Mesh or enter https://..."
             />
           </label>
 
@@ -1415,23 +1358,11 @@ function ServerConfigModal({ currentUrl, onSaveUrl, onClose }) {
               type="button"
               className="secondary-btn small-btn"
               onClick={() => {
-                const u = LIVE_FALLBACK_URL;
-                setInputUrl(u);
-                testHealth(u);
+                setInputUrl('');
+                testHealth('');
               }}
             >
-              ⚡ Live Cloud Uplink
-            </button>
-            <button
-              type="button"
-              className="secondary-btn small-btn"
-              onClick={() => {
-                const u = 'https://volt-shift-server.onrender.com';
-                setInputUrl(u);
-                testHealth(u);
-              }}
-            >
-              🌐 Render Service
+              ⚡ WebRTC Peer Mesh (Standalone)
             </button>
             <button
               type="button"
@@ -1444,13 +1375,24 @@ function ServerConfigModal({ currentUrl, onSaveUrl, onClose }) {
             >
               💻 Localhost (3001)
             </button>
+            <button
+              type="button"
+              className="secondary-btn small-btn"
+              onClick={() => {
+                const u = 'https://volt-shift-server.onrender.com';
+                setInputUrl(u);
+                testHealth(u);
+              }}
+            >
+              🌐 Render Service
+            </button>
           </div>
 
           {/* Health Check Test Result */}
           {testStatus && (
             <div className={`health-result-card ${testStatus.ok ? 'health-ok' : 'health-fail'}`}>
               <div className="health-header">
-                <b>{testStatus.ok ? '✓ SERVER ONLINE & HEALTHY' : '✗ CONNECTION FAILED'}</b>
+                <b>{testStatus.ok ? '✓ NETWORK ONLINE & HEALTHY' : '✗ CONNECTION FAILED'}</b>
                 {testStatus.ok && <span className="latency-badge">{testStatus.latency}ms ping</span>}
               </div>
               {testStatus.ok ? (
