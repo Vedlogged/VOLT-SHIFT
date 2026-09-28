@@ -1,0 +1,4 @@
+# Vercel deployment ignore
+# Tells Vercel this project is a pure frontend Vite application
+server/
+render.yaml
