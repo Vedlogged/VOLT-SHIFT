@@ -1,5 +1,5 @@
 {
-  "buildCommand": "node -e \"const fs=require('fs'),cp=require('child_process');if(fs.existsSync('src/main.jsx')){cp.execSync('npx vite build',{stdio:'inherit'});}else{cp.execSync('npx vite build --outDir ../dist --emptyOutDir',{cwd:'client',stdio:'inherit'});}\"",
+  "buildCommand": "node build.js",
   "outputDirectory": "dist",
   "cleanUrls": true,
   "rewrites": [
