@@ -1,5 +1,5 @@
 {
-  "buildCommand": "node build.js",
+  "buildCommand": "npx vite build",
   "outputDirectory": "dist",
   "cleanUrls": true,
   "rewrites": [
