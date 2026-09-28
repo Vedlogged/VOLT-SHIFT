@@ -11,6 +11,7 @@ import {
   tickRoom,
   publicState,
   ARENA,
+  NODE_TYPES,
   CAPTURE_RADIUS,
 } from '../src/game.js';
 
@@ -58,22 +59,47 @@ describe('VOLT//SHIFT Game Engine Unit Tests', () => {
 
     // Move left continuously beyond minX
     for (let i = 0; i < 30; i++) {
+      room.game.players.p1.lastMoveAt = 0; // reset throttle for boundary test
       move(room, 'p1', -1, 0);
     }
     assert.ok(room.game.players.p1.x >= ARENA.minX, `x was ${room.game.players.p1.x}`);
 
     // Move up beyond minY
     for (let i = 0; i < 30; i++) {
+      room.game.players.p1.lastMoveAt = 0;
       move(room, 'p1', 0, -1);
     }
     assert.ok(room.game.players.p1.y >= ARENA.minY, `y was ${room.game.players.p1.y}`);
 
     // Diagonal movement normalized
+    room.game.players.p1.lastMoveAt = 0;
     const prevX = room.game.players.p1.x;
     const prevY = room.game.players.p1.y;
     move(room, 'p1', 1, 1);
     const stepDist = Math.hypot(room.game.players.p1.x - prevX, room.game.players.p1.y - prevY);
     assert.ok(stepDist <= 4.0, `Step dist was ${stepDist}`);
+  });
+
+  test('anti-cheat rejects NaN, Infinity, and impossible coordinates', () => {
+    const room = makeMockRoom();
+    room.game = newMatch();
+    room.game.status = 'playing';
+    const originalX = room.game.players.p1.x;
+
+    assert.equal(move(room, 'p1', NaN, 0), false);
+    assert.equal(move(room, 'p1', Infinity, 0), false);
+    assert.equal(move(room, 'p1', 'hack', 'teleport'), false);
+    assert.equal(room.game.players.p1.x, originalX, 'Player position should remain untampered');
+  });
+
+  test('anti-cheat movement rate-limiting blocks rapid spamming', () => {
+    const room = makeMockRoom();
+    room.game = newMatch();
+    room.game.status = 'playing';
+    room.game.players.p1.lastMoveAt = Date.now(); // simulated immediate prior move
+
+    const rapidMoveAccepted = move(room, 'p1', 1, 0);
+    assert.equal(rapidMoveAccepted, false, 'Rapid movement input should be throttled by server');
   });
 
   test('capture fails when out of range', () => {
@@ -83,7 +109,7 @@ describe('VOLT//SHIFT Game Engine Unit Tests', () => {
     room.game.players.p1.x = 10;
     room.game.players.p1.y = 10;
     // Set node far away
-    room.game.nodes[0] = { id: 1, x: 80, y: 50, state: 'available', owner: null };
+    room.game.nodes[0] = { id: 1, x: 80, y: 50, type: 'normal', state: 'available', owner: null };
 
     const res = capture(room, 'p1');
     assert.equal(res.ok, false);
@@ -97,8 +123,8 @@ describe('VOLT//SHIFT Game Engine Unit Tests', () => {
     room.game.players.p1.x = 20;
     room.game.players.p1.y = 20;
     room.game.nodes = [
-      { id: 1, x: 22, y: 20, state: 'available', owner: null, expiresAt: null },
-      { id: 2, x: 25, y: 20, state: 'available', owner: null, expiresAt: null },
+      { id: 1, x: 22, y: 20, type: 'normal', state: 'available', owner: null, expiresAt: null },
+      { id: 2, x: 25, y: 20, type: 'normal', state: 'available', owner: null, expiresAt: null },
     ];
 
     const res = capture(room, 'p1');
@@ -111,13 +137,13 @@ describe('VOLT//SHIFT Game Engine Unit Tests', () => {
     assert.ok(room.game.nodes[0].expiresAt > Date.now());
   });
 
-  test('stealing opponent contested node grants 10 points and shifts ownership', () => {
+  test('stealing opponent contested node grants points and shifts ownership', () => {
     const room = makeMockRoom();
     room.game = newMatch();
     room.game.status = 'playing';
     // Node is contested by P1
     room.game.nodes = [
-      { id: 1, x: 50, y: 30, state: 'contested', owner: 'p1', expiresAt: Date.now() + 2000 },
+      { id: 1, x: 50, y: 30, type: 'normal', state: 'contested', owner: 'p1', expiresAt: Date.now() + 2000 },
     ];
     room.game.players.p2.x = 52;
     room.game.players.p2.y = 30;
@@ -131,13 +157,31 @@ describe('VOLT//SHIFT Game Engine Unit Tests', () => {
     assert.equal(room.game.nodes[0].state, 'contested');
   });
 
-  test('tickRoom locks contested node upon expiration and awards +5 lock bonus', () => {
+  test('stealing VOID node deducts penalty from previous owner', () => {
+    const room = makeMockRoom();
+    room.game = newMatch();
+    room.game.status = 'playing';
+    room.game.players.p1.score = 20;
+    room.game.nodes = [
+      { id: 'void-1', x: 50, y: 30, type: 'void', state: 'contested', owner: 'p1', expiresAt: Date.now() + 2000 },
+    ];
+    room.game.players.p2.x = 51;
+    room.game.players.p2.y = 30;
+
+    const res = capture(room, 'p2');
+    assert.equal(res.ok, true);
+    assert.equal(res.stolen, true);
+    assert.equal(room.game.players.p2.score, 20); // VOID grants +20
+    assert.equal(room.game.players.p1.score, 15); // P1 lost 5 points (20 - 5 = 15)
+  });
+
+  test('tickRoom locks contested node upon expiration and awards lock bonus', () => {
     const room = makeMockRoom();
     room.game = newMatch();
     room.game.status = 'playing';
     room.game.players.p1.score = 10;
     room.game.nodes = [
-      { id: 1, x: 30, y: 30, state: 'contested', owner: 'p1', expiresAt: Date.now() - 10, lockedAt: null },
+      { id: 1, x: 30, y: 30, type: 'normal', state: 'contested', owner: 'p1', expiresAt: Date.now() - 10, lockedAt: null },
     ];
 
     const changed = tickRoom(room);
@@ -146,21 +190,21 @@ describe('VOLT//SHIFT Game Engine Unit Tests', () => {
     assert.equal(room.game.players.p1.score, 15); // 10 + 5 bonus
   });
 
-  test('arenaShift displaces nearby available nodes on capture', () => {
+  test('SURGE capture triggers super shockwave with larger displacement radius', () => {
     const room = makeMockRoom();
     room.game = newMatch();
     room.game.status = 'playing';
     room.game.players.p1.x = 30;
     room.game.players.p1.y = 30;
     room.game.nodes = [
-      { id: 1, x: 32, y: 30, state: 'available', owner: null },
-      { id: 2, x: 36, y: 30, state: 'available', owner: null }, // nearby (distance 4)
+      { id: 1, x: 31, y: 30, type: 'surge', state: 'available', owner: null },
+      { id: 2, x: 62, y: 30, type: 'normal', state: 'available', owner: null }, // Distance = 31 (within 36 surge radius, outside 22 normal)
     ];
 
     const prevX = room.game.nodes[1].x;
     capture(room, 'p1');
-    assert.notEqual(room.game.nodes[1].x, prevX, 'Nearby node position shifted');
-    assert.ok(room.game.arenaShift !== null);
+    assert.notEqual(room.game.nodes[1].x, prevX, 'Node at distance 31 shifted by Surge shockwave');
+    assert.equal(room.game.arenaShift.isSurge, true);
   });
 
   test('sudden death triggered on tied round', () => {

@@ -4,7 +4,20 @@
  * stealing, locking, arena shifting, sudden death, and round/match lifecycle.
  */
 
-const ARENA = { w: 100, h: 60, minX: 4, maxX: 96, minY: 4, maxY: 56 };
+const ARENA = {
+  w: 100,
+  h: 60,
+  minX: 4,
+  maxX: 96,
+  minY: 4,
+  maxY: 56,
+  sectors: {
+    alpha: { name: 'ALPHA SECTOR', minX: 4, maxX: 35 },
+    core: { name: 'CORE NEXUS', minX: 35, maxX: 65 },
+    omega: { name: 'OMEGA SECTOR', minX: 65, maxX: 96 },
+  },
+};
+
 const ROUND_DURATION_MS = 60000;
 const COUNTDOWN_DURATION_MS = 3000;
 const CONTEST_DURATION_MS = 2500;
@@ -12,43 +25,119 @@ const NODE_RESPAWN_DELAY_MS = 1500;
 const CAPTURE_RADIUS = 9.0;
 const PLAYER_SPEED = 3.8;
 const TOTAL_ACTIVE_NODES = 8;
+const MIN_MOVE_INTERVAL_MS = 24; // Anti-spam rate limiting (~40Hz max)
+const MIN_CAPTURE_INTERVAL_MS = 80; // Anti-spam capture rate limiting
+
+const NODE_TYPES = {
+  normal: {
+    type: 'normal',
+    value: 10,
+    contestMs: 2500,
+    lockBonus: 5,
+    name: 'Volt Core',
+    color: '#00f0ff',
+  },
+  surge: {
+    type: 'surge',
+    value: 15,
+    contestMs: 2500,
+    lockBonus: 5,
+    shiftMultiplier: 1.8,
+    name: 'Surge Core',
+    color: '#ff9900',
+  },
+  anchor: {
+    type: 'anchor',
+    value: 10,
+    contestMs: 1600, // Locks faster!
+    lockBonus: 10,
+    name: 'Anchor Core',
+    color: '#05ffa1',
+  },
+  void: {
+    type: 'void',
+    value: 20, // High risk / high reward!
+    contestMs: 2000,
+    lockBonus: 10,
+    stealPenalty: 5,
+    name: 'Void Rift',
+    color: '#bf55ec',
+  },
+  sudden_death: {
+    type: 'sudden_death',
+    value: 25,
+    contestMs: 3000,
+    lockBonus: 25,
+    name: 'Omega Singularity',
+    color: '#ffe600',
+  },
+};
 
 const clamp = (n, min, max) => Math.max(min, Math.min(max, n));
 const rand = (min, max) => Math.random() * (max - min) + min;
 
-function generateNode(id, isSuddenDeath = false) {
+function getSector(x) {
+  if (x < 35) return 'alpha';
+  if (x > 65) return 'omega';
+  return 'core';
+}
+
+function getRandomNodeType() {
+  const r = Math.random();
+  if (r < 0.50) return 'normal';
+  if (r < 0.70) return 'surge';
+  if (r < 0.85) return 'anchor';
+  return 'void';
+}
+
+function generateNode(id, isSuddenDeath = false, forceType = null) {
   if (isSuddenDeath) {
+    const config = NODE_TYPES.sudden_death;
     return {
       id: id || 'sd-1',
       x: 50,
       y: 30,
+      type: 'sudden_death',
       state: 'available',
       owner: null,
       expiresAt: null,
       lockedAt: null,
       isSuddenDeath: true,
-      value: 25,
+      value: config.value,
+      sector: 'core',
+      name: config.name,
+      color: config.color,
     };
   }
 
-  // Generate node in safe playable bounds away from immediate player spawns
+  const selectedType = forceType || getRandomNodeType();
+  const config = NODE_TYPES[selectedType] || NODE_TYPES.normal;
+  const x = Math.round(rand(12, 88));
+  const y = Math.round(rand(10, 50));
+
   return {
     id: id || Math.random().toString(36).slice(2, 9),
-    x: Math.round(rand(12, 88)),
-    y: Math.round(rand(10, 50)),
+    x,
+    y,
+    type: selectedType,
     state: 'available',
     owner: null,
     expiresAt: null,
     lockedAt: null,
     isSuddenDeath: false,
-    value: 10,
+    value: config.value,
+    sector: getSector(x),
+    name: config.name,
+    color: config.color,
   };
 }
 
 function makeInitialNodes() {
+  // Pre-seed an engaging, balanced distribution across the 3 sectors
+  const presetTypes = ['normal', 'surge', 'anchor', 'void', 'normal', 'surge', 'normal', 'normal'];
   const nodes = [];
-  for (let i = 1; i <= TOTAL_ACTIVE_NODES; i++) {
-    nodes.push(generateNode(i));
+  for (let i = 0; i < TOTAL_ACTIVE_NODES; i++) {
+    nodes.push(generateNode(i + 1, false, presetTypes[i]));
   }
   return nodes;
 }
@@ -61,8 +150,8 @@ function newMatch() {
     countdownEndsAt: Date.now() + COUNTDOWN_DURATION_MS,
     roundEndsAt: null,
     players: {
-      p1: { x: 15, y: 30, score: 0 },
-      p2: { x: 85, y: 30, score: 0 },
+      p1: { x: 15, y: 30, score: 0, vx: 0, vy: 0, lastMoveAt: 0, lastCaptureAt: 0 },
+      p2: { x: 85, y: 30, score: 0, vx: 0, vy: 0, lastMoveAt: 0, lastCaptureAt: 0 },
     },
     nodes: makeInitialNodes(),
     lastEvent: { type: 'match_init', at: Date.now() },
@@ -78,8 +167,8 @@ function newRound(roundNumber, currentWins) {
     countdownEndsAt: Date.now() + COUNTDOWN_DURATION_MS,
     roundEndsAt: null,
     players: {
-      p1: { x: 15, y: 30, score: 0 },
-      p2: { x: 85, y: 30, score: 0 },
+      p1: { x: 15, y: 30, score: 0, vx: 0, vy: 0, lastMoveAt: 0, lastCaptureAt: 0 },
+      p2: { x: 85, y: 30, score: 0, vx: 0, vy: 0, lastMoveAt: 0, lastCaptureAt: 0 },
     },
     nodes: makeInitialNodes(),
     lastEvent: { type: 'round_init', round: roundNumber, at: Date.now() },
@@ -103,7 +192,7 @@ function startSuddenDeath(room) {
   s.status = 'sudden_death';
   room.status = 'sudden_death';
   s.roundEndsAt = null;
-  // Clear regular nodes and place the sudden death core
+  // Clear regular nodes and place the central sudden death omega singularity
   s.nodes = [generateNode('sudden-core', true)];
   s.lastEvent = { type: 'sudden_death', at: Date.now() };
   room.pendingEmit = true;
@@ -175,10 +264,19 @@ function move(room, slot, rawDx, rawDy) {
   const p = s.players[slot];
   if (!p) return false;
 
-  const dx = Number(rawDx) || 0;
-  const dy = Number(rawDy) || 0;
+  const now = Date.now();
+  // Anti-cheat rate limiting: ignore inputs fired faster than MIN_MOVE_INTERVAL_MS
+  if (p.lastMoveAt && now - p.lastMoveAt < MIN_MOVE_INTERVAL_MS) {
+    return false;
+  }
 
-  if (dx === 0 && dy === 0) return false;
+  const dx = Number(rawDx);
+  const dy = Number(rawDy);
+
+  // Security validation: reject NaN, Infinity, or impossible coordinates
+  if (!Number.isFinite(dx) || !Number.isFinite(dy) || (dx === 0 && dy === 0)) {
+    return false;
+  }
 
   // Normalize direction vector to prevent diagonal speed abuse
   const length = Math.hypot(dx, dy);
@@ -188,27 +286,35 @@ function move(room, slot, rawDx, rawDy) {
   const step = PLAYER_SPEED;
   p.x = clamp(p.x + normDx * step, ARENA.minX, ARENA.maxX);
   p.y = clamp(p.y + normDy * step, ARENA.minY, ARENA.maxY);
+  p.vx = normDx;
+  p.vy = normDy;
+  p.lastMoveAt = now;
 
   room.pendingEmit = true;
   return true;
 }
 
-function triggerArenaShift(s, sourceX, sourceY, capturingSlot) {
-  const SHIFT_RADIUS = 22;
+function triggerArenaShift(s, sourceX, sourceY, capturingSlot, nodeType = 'normal') {
+  const isSurge = nodeType === 'surge';
+  const isAnchor = nodeType === 'anchor';
+  const shiftRadius = isSurge ? 36 : 22;
+  const shiftForce = isSurge ? 9 : 5;
   let shiftedCount = 0;
 
   for (const node of s.nodes) {
     if (node.state === 'available') {
       const dist = Math.hypot(node.x - sourceX, node.y - sourceY);
-      if (dist < SHIFT_RADIUS && dist > 0.1) {
-        // Shift outward with bias based on player side
+      if (dist < shiftRadius && dist > 0.1) {
+        // If anchor node, dampens displacement (stabilizes vicinity)
+        const dampener = isAnchor ? 0.4 : 1.0;
         const dirX = (node.x - sourceX) / dist;
         const dirY = (node.y - sourceY) / dist;
-        const biasX = capturingSlot === 'p1' ? 4 : -4;
-        const biasY = (node.id % 2 === 0 ? 3 : -3);
+        const biasX = (capturingSlot === 'p1' ? 4 : -4) * dampener;
+        const biasY = (node.id % 2 === 0 ? 3 : -3) * dampener;
 
-        node.x = clamp(node.x + dirX * 5 + biasX, ARENA.minX + 4, ARENA.maxX - 4);
-        node.y = clamp(node.y + dirY * 5 + biasY, ARENA.minY + 4, ARENA.maxY - 4);
+        node.x = clamp(node.x + dirX * shiftForce * dampener + biasX, ARENA.minX + 4, ARENA.maxX - 4);
+        node.y = clamp(node.y + dirY * shiftForce * dampener + biasY, ARENA.minY + 4, ARENA.maxY - 4);
+        node.sector = getSector(node.x);
         shiftedCount++;
       }
     }
@@ -219,7 +325,9 @@ function triggerArenaShift(s, sourceX, sourceY, capturingSlot) {
     x: sourceX,
     y: sourceY,
     player: capturingSlot,
+    nodeType,
     shiftedCount,
+    isSurge,
   };
 }
 
@@ -231,6 +339,12 @@ function capture(room, slot) {
 
   const p = s.players[slot];
   if (!p) return { ok: false, reason: 'invalid_player' };
+
+  const now = Date.now();
+  // Anti-cheat rate limiting on capture trigger
+  if (p.lastCaptureAt && now - p.lastCaptureAt < MIN_CAPTURE_INTERVAL_MS) {
+    return { ok: false, reason: 'cooldown' };
+  }
 
   let closestNode = null;
   let minDistance = Infinity;
@@ -250,21 +364,28 @@ function capture(room, slot) {
     return { ok: false, reason: 'too_far', distance: minDistance };
   }
 
-  const now = Date.now();
+  p.lastCaptureAt = now;
   const isSteal = closestNode.state === 'contested' && closestNode.owner !== slot;
   const wasOwner = closestNode.owner;
+  const nodeConfig = NODE_TYPES[closestNode.type] || NODE_TYPES.normal;
 
   closestNode.state = 'contested';
   closestNode.owner = slot;
-  closestNode.expiresAt = now + CONTEST_DURATION_MS;
+  closestNode.expiresAt = now + (nodeConfig.contestMs || CONTEST_DURATION_MS);
 
-  // Immediate capture points
-  const points = isSteal ? 10 : 10;
+  // Calculate points
+  let points = nodeConfig.value || 10;
   p.score += points;
+
+  // Handle Void Node Steal Penalty: if stolen, previous owner suffers penalty
+  if (isSteal && closestNode.type === 'void' && wasOwner && s.players[wasOwner]) {
+    s.players[wasOwner].score = Math.max(0, s.players[wasOwner].score - (nodeConfig.stealPenalty || 5));
+  }
 
   s.lastEvent = {
     type: isSteal ? 'steal' : 'capture',
     nodeId: closestNode.id,
+    nodeType: closestNode.type,
     player: slot,
     previousOwner: wasOwner,
     points,
@@ -272,13 +393,14 @@ function capture(room, slot) {
     at: now,
   };
 
-  // Trigger arena shift
-  triggerArenaShift(s, closestNode.x, closestNode.y, slot);
+  // Trigger arena shift with node type characteristics
+  triggerArenaShift(s, closestNode.x, closestNode.y, slot, closestNode.type);
 
   room.pendingEmit = true;
   return {
     ok: true,
     nodeId: closestNode.id,
+    nodeType: closestNode.type,
     stolen: isSteal,
     points,
   };
@@ -308,7 +430,8 @@ function tickRoom(room) {
         node.lockedAt = now;
         node.expiresAt = null;
 
-        const lockBonus = node.isSuddenDeath ? 25 : 5;
+        const nodeConfig = NODE_TYPES[node.type] || NODE_TYPES.normal;
+        const lockBonus = node.isSuddenDeath ? 25 : (nodeConfig.lockBonus || 5);
         if (node.owner && s.players[node.owner]) {
           s.players[node.owner].score += lockBonus;
         }
@@ -316,6 +439,7 @@ function tickRoom(room) {
         s.lastEvent = {
           type: 'lock',
           nodeId: node.id,
+          nodeType: node.type,
           player: node.owner,
           bonus: lockBonus,
           isSuddenDeath: node.isSuddenDeath,
@@ -397,6 +521,7 @@ function publicState(room) {
 
 export {
   ARENA,
+  NODE_TYPES,
   ROUND_DURATION_MS,
   COUNTDOWN_DURATION_MS,
   CONTEST_DURATION_MS,
@@ -411,4 +536,5 @@ export {
   capture,
   tickRoom,
   publicState,
+  getSector,
 };

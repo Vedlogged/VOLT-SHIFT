@@ -45,6 +45,15 @@ try {
 
   const serverUrl = `http://127.0.0.1:${TEST_PORT}`;
 
+  // 0. Verify Health endpoint
+  const healthRes = await fetch(`${serverUrl}/health`);
+  assert.equal(healthRes.status, 200);
+  const healthData = await healthRes.json();
+  assert.equal(healthData.ok, true);
+  assert.equal(healthData.service, 'volt-shift-server');
+  assert.ok(typeof healthData.uptimeSeconds === 'number');
+  console.log('PASS: Health endpoint responded with valid server metrics.');
+
   console.log('Connecting Client A and Client B...');
   const clientA = io(serverUrl, { transports: ['websocket', 'polling'] });
   const clientB = io(serverUrl, { transports: ['websocket', 'polling'] });
@@ -131,6 +140,8 @@ try {
   assert.equal(stateB.game.status, 'playing');
   assert.equal(stateA.game.players.p1.score, stateB.game.players.p1.score);
   assert.equal(stateA.game.players.p2.score, stateB.game.players.p2.score);
+  assert.ok(Array.isArray(stateA.game.nodes));
+  assert.ok(stateA.game.nodes.length >= 8);
   console.log('PASS: Synchronized state verified on both clients in playing state.');
 
   // 6. Test movement and authoritative capture
@@ -143,12 +154,17 @@ try {
   assert.equal(typeof captureRes.ok, 'boolean');
   console.log('PASS: Server evaluated capture request authoritatively.');
 
-  // 7. Rematch voting test
-  // Set room to match_end in memory or test rematch command
+  // 7. Security: Test malformed movement input does not crash server
+  const malformedRes = await new Promise((resolve) => {
+    clientA.emit('input:move', { dx: 'invalid', dy: { hack: true } }, resolve);
+  });
+  assert.equal(malformedRes.ok, false);
+  console.log('PASS: Server safely rejected malformed input without error.');
+
+  // 8. Rematch voting test
   const rematchRes = await new Promise((resolve) => {
     clientA.emit('game:rematch', {}, resolve);
   });
-  // Since match is currently playing, rematch returns ok: false
   assert.equal(rematchRes.ok, false);
   console.log('PASS: Rematch rejected when match is not in match_end status.');
 

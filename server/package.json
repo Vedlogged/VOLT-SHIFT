@@ -1,13 +1,13 @@
 {
   "name": "volt-shift-server",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "type": "module",
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
-    "test": "node --test test/game.test.js && node test/multiplayer.test.js",
-    "test:unit": "node --test test/game.test.js",
-    "test:integration": "node test/multiplayer.test.js"
+    "test": "node --test test/game.test.js && node --test test/match_lifecycle.test.js && node test/multiplayer.test.js && node test/full_e2e_gameplay.test.js",
+    "test:unit": "node --test test/game.test.js && node --test test/match_lifecycle.test.js",
+    "test:integration": "node test/multiplayer.test.js && node test/full_e2e_gameplay.test.js"
   },
   "dependencies": {
     "cors": "^2.8.5",

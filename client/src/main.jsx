@@ -4,7 +4,11 @@ import { io } from 'socket.io-client';
 import * as Sound from './sound.js';
 import './styles.css';
 
-const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:3001';
+const DEFAULT_SERVER_URL = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+  ? 'http://localhost:3001'
+  : 'https://volt-shift-server.onrender.com';
+
+const SERVER_URL = import.meta.env.VITE_SERVER_URL || DEFAULT_SERVER_URL;
 const RESUME_KEY = 'voltshift_resume_token';
 const CALLSIGN_KEY = 'voltshift_callsign';
 
@@ -24,11 +28,10 @@ export function App() {
   const socketRef = useRef(null);
   const keysRef = useRef({});
   const lastEventProcessedRef = useRef(null);
-  const countdownAudioRef = useRef(null);
 
   // Initialize callsign persistence
   const updateCallsign = (name) => {
-    const safe = name.slice(0, 16);
+    const safe = name.replace(/[<>]/g, '').slice(0, 16);
     setCallsign(safe);
     localStorage.setItem(CALLSIGN_KEY, safe);
   };
@@ -48,7 +51,7 @@ export function App() {
     setIsMuted(muted);
   };
 
-  // Connect to Socket.IO Server
+  // Connect to Authoritative Socket.IO Server
   useEffect(() => {
     const storedToken = localStorage.getItem(RESUME_KEY);
     const socket = io(SERVER_URL, {
@@ -70,7 +73,7 @@ export function App() {
       if (res && res.ok) {
         setRoomCode(res.code);
         setMySlot(res.slot);
-        showToast(`Reconnected to room ${res.code}`, false);
+        showToast(`Reconnected to sector ${res.code}`, false);
       }
     });
 
@@ -100,35 +103,38 @@ export function App() {
     };
   }, []);
 
-  // Event Sound & Floating Effect Triggering
+  // Event Sound & Floating Feedback Triggering
   useEffect(() => {
     if (!serverState?.game?.lastEvent) return;
     const evt = serverState.game.lastEvent;
     if (lastEventProcessedRef.current === evt.at) return;
     lastEventProcessedRef.current = evt.at;
 
+    const isMe = evt.player === mySlot;
+    const nodeTypeName = evt.nodeType ? evt.nodeType.toUpperCase() : 'CORE';
+
     if (evt.type === 'capture') {
-      Sound.playCapture();
-      if (evt.player === mySlot) {
-        addFloatingText('+10 CAPTURE!', 'cyan');
+      Sound.playCapture(evt.nodeType);
+      if (isMe) {
+        addFloatingText(`+${evt.points} ${nodeTypeName} CAPTURE!`, evt.nodeType === 'void' ? 'violet' : evt.nodeType === 'surge' ? 'amber' : 'cyan');
       } else {
-        addFloatingText('OPPONENT CAPTURE', 'magenta');
+        addFloatingText(`RIVAL CAPTURED ${nodeTypeName}`, 'magenta');
       }
     } else if (evt.type === 'steal') {
       Sound.playSteal();
-      if (evt.player === mySlot) {
-        addFloatingText('+10 STEAL!', 'yellow');
+      if (isMe) {
+        addFloatingText(`+${evt.points} ${nodeTypeName} STOLEN!`, 'yellow');
       } else {
-        addFloatingText('POWER STOLEN!', 'red');
+        addFloatingText(`ENERGY INTERCEPTED!`, 'red');
       }
     } else if (evt.type === 'lock') {
       Sound.playLock();
-      if (evt.player === mySlot) {
-        addFloatingText(`+${evt.bonus || 5} SECURED!`, 'green');
+      if (isMe) {
+        addFloatingText(`+${evt.bonus || 5} LOCKED IN!`, 'green');
       }
     } else if (evt.type === 'sudden_death') {
       Sound.playSuddenDeath();
-      addFloatingText('⚡ SUDDEN DEATH ⚡', 'gold');
+      addFloatingText('⚡ SUDDEN DEATH SINGULARITY ⚡', 'gold');
     } else if (evt.type === 'round_end') {
       if (evt.winner === mySlot) {
         Sound.playWin();
@@ -147,7 +153,7 @@ export function App() {
   // Audio trigger for arena shifts
   useEffect(() => {
     if (serverState?.game?.arenaShift) {
-      Sound.playArenaShift();
+      Sound.playArenaShift(serverState.game.arenaShift.isSurge);
     }
   }, [serverState?.game?.arenaShift?.at]);
 
@@ -166,7 +172,7 @@ export function App() {
     });
   };
 
-  // Actions
+  // User Actions
   const handleCreateRoom = async () => {
     Sound.playClick();
     const res = await emitPromise('room:create', { name: callsign });
@@ -191,9 +197,10 @@ export function App() {
     const res = await emitPromise('room:join', { code: cleanCode, name: callsign });
     if (!res.ok) {
       const errorMessages = {
-        ROOM_NOT_FOUND: 'Room not found. Check the code and try again.',
-        ROOM_FULL: 'This room already has 2 players.',
-        GAME_ALREADY_STARTED: 'That match is already in progress.',
+        ROOM_NOT_FOUND: 'Sector code not found. Verify the code and try again.',
+        ROOM_FULL: 'This sector already has 2 active pilots.',
+        GAME_ALREADY_STARTED: 'Match already in progress in this sector.',
+        SERVER_AT_CAPACITY: 'Server at full capacity. Please try again shortly.',
       };
       showToast(errorMessages[res.error] || 'Unable to join room.');
       return;
@@ -215,11 +222,11 @@ export function App() {
     const res = await emitPromise('game:start');
     if (!res.ok) {
       const errs = {
-        NEED_TWO_PLAYERS: 'Waiting for a second player to join.',
-        BOTH_MUST_BE_READY: 'Both players must click READY before starting.',
-        NOT_HOST: 'Only the room host can start the match.',
+        NEED_TWO_PLAYERS: 'Waiting for a second pilot to connect.',
+        BOTH_MUST_BE_READY: 'Both pilots must engage READY before starting.',
+        NOT_HOST: 'Only the sector host can launch the match.',
       };
-      showToast(errs[res.error] || 'Unable to start game.');
+      showToast(errs[res.error] || 'Unable to launch match.');
     }
   };
 
@@ -291,7 +298,7 @@ export function App() {
     if (!socketRef.current) return;
     socketRef.current.emit('input:capture', {}, (res) => {
       if (res && !res.ok && res.reason === 'too_far') {
-        showToast('Move closer to an energy node to capture!', false);
+        showToast('Fly closer to an energy node to initiate capture!', false);
       }
     });
   }, []);
@@ -328,13 +335,16 @@ export function App() {
           </button>
           <button
             className="secondary-btn small-btn"
-            onClick={() => setHowToPlayOpen(true)}
+            onClick={() => {
+              Sound.playClick();
+              setHowToPlayOpen(true);
+            }}
           >
-            RULES
+            HOW TO PLAY
           </button>
           <div className="status-pill">
             <span className={`status-dot ${connected ? 'online' : 'connecting'}`} />
-            {connected ? 'ONLINE' : 'CONNECTING...'}
+            {connected ? 'CONNECTED' : 'RECONNECTING...'}
           </div>
         </div>
       </header>
@@ -362,7 +372,10 @@ export function App() {
           onRoomCodeChange={setRoomCode}
           onCreateRoom={handleCreateRoom}
           onJoinRoom={handleJoinRoom}
-          onOpenRules={() => setHowToPlayOpen(true)}
+          onOpenRules={() => {
+            Sound.playClick();
+            setHowToPlayOpen(true);
+          }}
         />
       )}
 
@@ -376,9 +389,10 @@ export function App() {
           onStartGame={handleStartGame}
           onLeaveRoom={handleLeaveRoom}
           onCopyLink={() => {
+            Sound.playCopy();
             const url = `${window.location.origin}${window.location.pathname}?room=${serverState?.roomCode || roomCode}`;
             navigator.clipboard?.writeText(url);
-            showToast('Invite link copied to clipboard!', false);
+            showToast('Direct invite link copied to clipboard!', false);
           }}
         />
       )}
@@ -400,46 +414,9 @@ export function App() {
         />
       )}
 
-      {/* How To Play Modal */}
+      {/* Interactive How To Play Mini-Tutorial Modal */}
       {howToPlayOpen && (
-        <div className="modal-backdrop" onClick={() => setHowToPlayOpen(false)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h2>HOW TO PLAY VOLT//SHIFT</h2>
-              <button className="close-btn" onClick={() => setHowToPlayOpen(false)}>×</button>
-            </div>
-            <div className="rules-grid">
-              <div className="rule-card">
-                <span className="rule-num">1</span>
-                <h3>CAPTURE POWER</h3>
-                <p>Move onto unstable energy nodes ⚡ and trigger <b>CAPTURE</b> (+10 pts).</p>
-              </div>
-              <div className="rule-card">
-                <span className="rule-num">2</span>
-                <h3>ARENA SHIFTS</h3>
-                <p>Capturing power creates a shockwave that displaces nearby energy nodes.</p>
-              </div>
-              <div className="rule-card">
-                <span className="rule-num">3</span>
-                <h3>STEAL & CONTEST</h3>
-                <p>Captured power is vulnerable for 2.5s. Rush in to <b>STEAL</b> it (+10 pts) before it locks!</p>
-              </div>
-              <div className="rule-card">
-                <span className="rule-num">4</span>
-                <h3>LOCK & WIN</h3>
-                <p>Holding power until it locks awards +5 lock bonus. Most points in 60s wins the round (Best of 3).</p>
-              </div>
-            </div>
-            <div className="controls-guide">
-              <h4>CONTROLS</h4>
-              <p><b>Desktop:</b> WASD or Arrow Keys to move · Spacebar / E / Click to Capture.</p>
-              <p><b>Mobile:</b> Virtual touch joystick / D-pad · Big glowing CAPTURE button.</p>
-            </div>
-            <button className="primary-btn full-width" onClick={() => setHowToPlayOpen(false)}>
-              LET'S BATTLE
-            </button>
-          </div>
-        </div>
+        <HowToPlayModal onClose={() => setHowToPlayOpen(false)} />
       )}
     </div>
   );
@@ -458,18 +435,19 @@ function HomeScreen({
   return (
     <main className="screen home-screen">
       <div className="hero-section">
-        <div className="hero-badge">FAST-PACED MULTIPLAYER ARENA</div>
+        <div className="hero-badge">FAST 2-PLAYER COMPETITIVE CYBER ARENA</div>
         <h1 className="hero-title">
-          TWO PLAYERS.<br />
-          <span className="neon-text">ONE UNSTABLE ARENA.</span>
+          CAPTURE ENERGY.<br />
+          <span className="neon-text">SHIFT THE ARENA.</span><br />
+          <span className="highlight-text">STEAL THE ADVANTAGE.</span>
         </h1>
         <p className="hero-desc">
-          Capture unstable energy nodes, trigger arena shockwaves, intercept rival power, and lock your voltage.
+          Unstable energy nodes alter the shared arena every time they are captured. Intercept rival power before it locks, master dynamic sector shifts, and dominate the best-of-three match.
         </p>
 
         <div className="auth-card">
           <label className="input-label">
-            YOUR CALLSIGN
+            PILOT CALLSIGN
             <input
               type="text"
               className="cyber-input"
@@ -489,7 +467,7 @@ function HomeScreen({
               <input
                 type="text"
                 className="cyber-input code-input"
-                placeholder="ROOM CODE"
+                placeholder="4-LETTER CODE"
                 maxLength={4}
                 value={roomCode}
                 onChange={(e) => onRoomCodeChange(e.target.value.toUpperCase())}
@@ -502,9 +480,29 @@ function HomeScreen({
           </div>
         </div>
 
+        {/* Energy Nodes Showcase Strip */}
+        <div className="energy-strip">
+          <div className="energy-pill energy-normal">
+            <span className="pill-dot">⚡</span>
+            <span>VOLT CORE (+10)</span>
+          </div>
+          <div className="energy-pill energy-surge">
+            <span className="pill-dot">💥</span>
+            <span>SURGE CORE (+15 SHOCKWAVE)</span>
+          </div>
+          <div className="energy-pill energy-anchor">
+            <span className="pill-dot">🛡️</span>
+            <span>ANCHOR CORE (+10 FAST LOCK)</span>
+          </div>
+          <div className="energy-pill energy-void">
+            <span className="pill-dot">🌀</span>
+            <span>VOID RIFT (+20 HIGH STAKES)</span>
+          </div>
+        </div>
+
         <div className="home-quick-rules" onClick={onOpenRules}>
-          <span>⚡ 60s Round · Best of 3 · Real-time Socket Sync · Desktop & Mobile</span>
-          <u>View Game Guide →</u>
+          <span>⚡ 60s Rounds · Best of 3 · Sudden Death Decider · Pure Server Authority</span>
+          <u>Interactive Field Manual →</u>
         </div>
       </div>
     </main>
@@ -532,44 +530,52 @@ function LobbyScreen({
     <main className="screen lobby-screen">
       <div className="lobby-card">
         <div className="lobby-header">
-          <div className="eyebrow">SECTOR READY ROOM</div>
+          <div className="eyebrow">SECTOR BRIEFING ROOM</div>
           <h2 className="room-title">ARENA ACCESS CODE</h2>
-          <div className="room-code-display" onClick={onCopyLink} title="Click to copy invite link">
+          <div className="room-code-display" onClick={onCopyLink} title="Click to copy direct join link">
             <span className="code-text">{roomCode}</span>
             <button className="copy-badge">📋 COPY LINK</button>
           </div>
-          <p className="lobby-hint">Share this code with your opponent to enter the arena.</p>
+          <p className="lobby-hint">Share this 4-letter access code with your rival to initiate arena link.</p>
         </div>
 
         <div className="players-grid">
-          {/* Player 1 Card */}
+          {/* Player 1 Card (Cyan Volt Strike) */}
           <div className={`player-card p1-card ${p1 ? 'active' : 'empty'}`}>
             <div className="player-avatar p1-avatar">
-              {p1 ? p1.name.slice(0, 2).toUpperCase() : 'P1'}
+              <svg viewBox="0 0 40 40" className="pilot-icon-svg">
+                <polygon points="20,4 34,34 20,26 6,34" fill="#00f0ff" stroke="#fff" strokeWidth="1.5" />
+                <circle cx="20" cy="20" r="3" fill="#fff" />
+              </svg>
             </div>
             <div className="player-info">
               <div className="player-name-row">
-                <h3>{p1 ? p1.name : 'WAITING FOR PLAYER 1...'}</h3>
+                <h3>{p1 ? p1.name : 'WAITING FOR PILOT 1...'}</h3>
                 {mySlot === 'p1' && <span className="you-tag">YOU</span>}
               </div>
+              <div className="ship-callout">CRAFT: VOLT STRIKER [CYAN]</div>
               <div className={`ready-status ${p1?.ready ? 'ready' : 'not-ready'}`}>
-                {p1 ? (p1.ready ? '● READY' : '○ NOT READY') : 'VACANT'}
+                {p1 ? (p1.ready ? '● READY TO LAUNCH' : '○ SYSTEM STANDBY') : 'VACANT'}
               </div>
             </div>
           </div>
 
-          {/* Player 2 Card */}
+          {/* Player 2 Card (Magenta Shift Phantom) */}
           <div className={`player-card p2-card ${p2 ? 'active' : 'empty'}`}>
             <div className="player-avatar p2-avatar">
-              {p2 ? p2.name.slice(0, 2).toUpperCase() : 'P2'}
+              <svg viewBox="0 0 40 40" className="pilot-icon-svg">
+                <polygon points="20,36 34,6 20,14 6,6" fill="#ff2a6d" stroke="#fff" strokeWidth="1.5" />
+                <circle cx="20" cy="20" r="3" fill="#fff" />
+              </svg>
             </div>
             <div className="player-info">
               <div className="player-name-row">
                 <h3>{p2 ? p2.name : 'WAITING FOR OPPONENT...'}</h3>
                 {mySlot === 'p2' && <span className="you-tag">YOU</span>}
               </div>
+              <div className="ship-callout">CRAFT: SHIFT PHANTOM [MAGENTA]</div>
               <div className={`ready-status ${p2?.ready ? 'ready' : 'not-ready'}`}>
-                {p2 ? (p2.ready ? '● READY' : '○ NOT READY') : 'WAITING...'}
+                {p2 ? (p2.ready ? '● READY TO LAUNCH' : '○ SYSTEM STANDBY') : 'AWAITING CONNECTION...'}
               </div>
             </div>
           </div>
@@ -580,7 +586,7 @@ function LobbyScreen({
             className={`action-btn ready-btn ${myPlayer?.ready ? 'cancel-ready' : 'confirm-ready'}`}
             onClick={onToggleReady}
           >
-            {myPlayer?.ready ? 'CANCEL READY' : 'I AM READY'}
+            {myPlayer?.ready ? 'CANCEL READY' : 'PILOT READY'}
           </button>
 
           {isHost ? (
@@ -592,17 +598,17 @@ function LobbyScreen({
               {!p2
                 ? 'WAITING FOR OPPONENT...'
                 : !bothReady
-                ? 'WAITING FOR ALL READY'
-                : 'START MATCH'}
+                ? 'WAITING FOR BOTH PILOTS'
+                : 'ENGAGE MATCH'}
             </button>
           ) : (
             <div className="waiting-host-note">
-              Waiting for host to launch the match once both are ready...
+              Waiting for host to launch the match once both pilots are ready...
             </div>
           )}
 
           <button className="secondary-btn leave-btn" onClick={onLeaveRoom}>
-            LEAVE ROOM
+            LEAVE SECTOR
           </button>
         </div>
       </div>
@@ -643,7 +649,8 @@ function GameScreen({
     return (
       <main className="screen game-screen">
         <div className="loading-container">
-          <h2>INITIALIZING ARENA CONNECTION...</h2>
+          <div className="loading-spinner" />
+          <h2>INITIALIZING ARENA UPLINK...</h2>
         </div>
       </main>
     );
@@ -748,7 +755,7 @@ function GameScreen({
       {/* Opponent Disconnected Banner */}
       {opponentDisconnected && (
         <div className="disconnect-banner">
-          ⚠️ OPPONENT DISCONNECTED — Waiting for reconnect...
+          ⚠️ RIVAL LINK LOST — Waiting 20s for reconnection...
         </div>
       )}
 
@@ -758,7 +765,7 @@ function GameScreen({
         <div className={`hud-player p1-hud ${mySlot === 'p1' ? 'is-me' : ''}`}>
           <div className="hud-player-meta">
             <span className="slot-badge p1-badge">P1</span>
-            <span className="hud-callsign">{players?.p1?.name || 'P1'}</span>
+            <span className="hud-callsign">{players?.p1?.name || 'Pilot 1'}</span>
             {mySlot === 'p1' && <span className="hud-you">(YOU)</span>}
           </div>
           <div className="hud-score-val">{gs.players?.p1?.score || 0}</div>
@@ -772,7 +779,7 @@ function GameScreen({
         <div className="hud-center">
           <div className="timer-badge">
             {isCountdown ? (
-              <span className="countdown-hud-text">GET READY</span>
+              <span className="countdown-hud-text">STANDBY</span>
             ) : gs.status === 'sudden_death' ? (
               <span className="sudden-death-hud-text">⚡ SUDDEN DEATH</span>
             ) : (
@@ -783,7 +790,7 @@ function GameScreen({
             )}
           </div>
           <div className="round-label">
-            ROUND {gs.round} <span className="series-label">(BEST OF 3)</span>
+            ROUND {gs.round} <span className="series-label">(FIRST TO 2)</span>
           </div>
         </div>
 
@@ -791,7 +798,7 @@ function GameScreen({
         <div className={`hud-player p2-hud ${mySlot === 'p2' ? 'is-me' : ''}`}>
           <div className="hud-player-meta">
             <span className="slot-badge p2-badge">P2</span>
-            <span className="hud-callsign">{players?.p2?.name || 'P2'}</span>
+            <span className="hud-callsign">{players?.p2?.name || 'Pilot 2'}</span>
             {mySlot === 'p2' && <span className="hud-you">(YOU)</span>}
           </div>
           <div className="hud-score-val">{gs.players?.p2?.score || 0}</div>
@@ -814,34 +821,56 @@ function GameScreen({
       {/* Arena Viewport */}
       <div className="arena-outer-frame">
         <div
-          className={`arena-viewport ${gs.arenaShift ? 'arena-pulse-active' : ''}`}
+          className={`arena-viewport ${gs.arenaShift ? (gs.arenaShift.isSurge ? 'arena-pulse-surge' : 'arena-pulse-active') : ''}`}
         >
-          {/* Animated Grid Lines */}
+          {/* Animated Grid Lines & Sector Dividers */}
           <div className="arena-grid-overlay" />
+          <div className="arena-sectors-overlay">
+            <div className="sector-zone sector-alpha">
+              <span className="sector-tag">ALPHA ZONE</span>
+            </div>
+            <div className="sector-zone sector-core">
+              <span className="sector-tag">CORE NEXUS</span>
+            </div>
+            <div className="sector-zone sector-omega">
+              <span className="sector-tag">OMEGA ZONE</span>
+            </div>
+          </div>
 
           {/* Energy Nodes */}
           {gs.nodes?.map((node) => {
             const isContested = node.state === 'contested';
             const isLocked = node.state === 'locked';
             const isSudden = node.isSuddenDeath;
+            const nodeType = node.type || 'normal';
+            const maxDuration = nodeType === 'anchor' ? 1600 : nodeType === 'void' ? 2000 : 2500;
             const contestTimeLeft = node.expiresAt
-              ? Math.max(0, ((node.expiresAt - now) / 2500) * 100)
+              ? Math.max(0, ((node.expiresAt - now) / maxDuration) * 100)
               : 0;
+
+            const iconMap = {
+              normal: '⚡',
+              surge: '💥',
+              anchor: '🛡️',
+              void: '🌀',
+              sudden_death: '⚡⚡',
+            };
 
             return (
               <div
                 key={node.id}
-                className={`arena-node node-${node.state} owner-${node.owner || 'none'} ${
+                className={`arena-node node-${node.state} node-type-${nodeType} owner-${node.owner || 'none'} ${
                   isSudden ? 'node-sudden-death' : ''
                 }`}
                 style={{ left: `${node.x}%`, top: `${node.y}%` }}
               >
-                {/* Node Core Icon */}
+                {/* Node Holographic Core */}
                 <div className="node-core">
-                  <span>{isSudden ? '⚡⚡' : isLocked ? '🔒' : '⚡'}</span>
+                  <div className="node-ring" />
+                  <span className="node-icon">{isSudden ? '⚡⚡' : isLocked ? '🔒' : iconMap[nodeType] || '⚡'}</span>
                 </div>
 
-                {/* Contested Circular Timer Progress */}
+                {/* Contested Radial/Bar Timer Progress */}
                 {isContested && (
                   <div className="contest-indicator">
                     <div
@@ -857,25 +886,53 @@ function GameScreen({
             );
           })}
 
-          {/* Player Avatars */}
+          {/* Player Cyber Craft Avatars */}
           {['p1', 'p2'].map((slot) => {
             const p = gs.players?.[slot];
             if (!p) return null;
             const isMe = slot === mySlot;
             const playerMeta = players?.[slot];
 
+            // Calculate rotation angle from velocity vector
+            const angle = (p.vx || p.vy)
+              ? Math.atan2(p.vy || 0, p.vx || 0) * (180 / Math.PI) + 90
+              : slot === 'p1' ? 90 : -90;
+
             return (
               <div
                 key={slot}
                 className={`player-ship ship-${slot} ${isMe ? 'ship-me' : 'ship-rival'}`}
-                style={{ left: `${p.x}%`, top: `${p.y}%` }}
+                style={{
+                  left: `${p.x}%`,
+                  top: `${p.y}%`,
+                  transform: `translate(-50%, -50%) rotate(${angle}deg)`,
+                }}
               >
-                <div className="ship-model">
-                  <div className="ship-aura" />
-                  <div className="ship-thruster" />
+                <div className="ship-body">
+                  <svg viewBox="0 0 32 32" className="craft-svg">
+                    {slot === 'p1' ? (
+                      // P1 Volt Striker: Forward delta wing with cyan aura
+                      <g>
+                        <polygon points="16,3 29,28 16,21 3,28" fill="#00f0ff" stroke="#ffffff" strokeWidth="1.5" />
+                        <polygon points="16,9 24,24 16,19 8,24" fill="#052840" />
+                        <circle cx="16" cy="15" r="2.5" fill="#ffffff" />
+                      </g>
+                    ) : (
+                      // P2 Shift Phantom: Stealth razor wing with magenta aura
+                      <g>
+                        <polygon points="16,3 29,26 22,23 16,28 10,23 3,26" fill="#ff2a6d" stroke="#ffffff" strokeWidth="1.5" />
+                        <polygon points="16,8 23,21 16,17 9,21" fill="#400518" />
+                        <circle cx="16" cy="14" r="2.5" fill="#ffffff" />
+                      </g>
+                    )}
+                  </svg>
+                  <div className="ship-thruster-flame" />
                 </div>
-                <div className="ship-label">
-                  {isMe ? 'YOU' : playerMeta?.name?.slice(0, 6).toUpperCase() || slot.toUpperCase()}
+                <div
+                  className="ship-label"
+                  style={{ transform: `rotate(${-angle}deg)` }}
+                >
+                  {isMe ? 'YOU' : playerMeta?.name?.slice(0, 8).toUpperCase() || slot.toUpperCase()}
                 </div>
               </div>
             );
@@ -886,7 +943,7 @@ function GameScreen({
             <div className="game-overlay countdown-overlay">
               <div className="countdown-box">
                 <div className="countdown-big-num">{countdownSeconds}</div>
-                <div className="countdown-sub">INITIALIZING ARENA</div>
+                <div className="countdown-sub">SYNCHRONIZING ARENA SECTORS</div>
               </div>
             </div>
           )}
@@ -914,7 +971,7 @@ function GameScreen({
                     <b>{otherPlayer?.score || 0}</b>
                   </div>
                 </div>
-                <p className="overlay-next-note">Preparing next round...</p>
+                <p className="overlay-next-note">Calibrating next round...</p>
               </div>
             </div>
           )}
@@ -940,7 +997,7 @@ function GameScreen({
                       : 'REQUEST REMATCH'}
                   </button>
                   <button className="secondary-btn" onClick={onLeave}>
-                    LEAVE ROOM
+                    LEAVE SECTOR
                   </button>
                 </div>
               </div>
@@ -1025,11 +1082,135 @@ function GameScreen({
       {/* Footer Info Bar */}
       <footer className="game-footer">
         <span className="desktop-shortcut-tip">
-          ⌨️ Desktop: WASD / Arrows to Move · Spacebar / E to Capture
+          ⌨️ Desktop: WASD / Arrow Keys to Steer · Spacebar / E / Enter to Capture
         </span>
-        <span className="room-ref-tag">ROOM: {roomCode}</span>
+        <span className="room-ref-tag">SECTOR: {roomCode}</span>
       </footer>
     </main>
+  );
+}
+
+// ----------------- INTERACTIVE MINI-TUTORIAL MODAL -----------------
+function HowToPlayModal({ onClose }) {
+  const [activeTab, setActiveTab] = useState(0);
+
+  const steps = [
+    {
+      title: '1. MANEUVER & SEEK',
+      text: 'Pilot your craft into proximity with unstable energy nodes across the Alpha, Core, and Omega sectors.',
+      badge: 'MOVE',
+      demo: 'move',
+    },
+    {
+      title: '2. CAPTURE & ARENA SHIFT',
+      text: 'Trigger CAPTURE (Space / Enter / Button). Absorbing energy fires a shockwave that displaces surrounding nodes!',
+      badge: 'SHIFT',
+      demo: 'shift',
+    },
+    {
+      title: '3. INTERCEPT & STEAL',
+      text: 'Captured power is vulnerable for 2.5s. Rush into opponent nodes before the countdown expires to STEAL their voltage!',
+      badge: 'STEAL',
+      demo: 'steal',
+    },
+    {
+      title: '4. LOCK IN & SUDDEN DEATH',
+      text: 'Holding power until the timer expires awards lock bonus points. If tied at 60s, central Sudden Death Core resolves the round!',
+      badge: 'LOCK',
+      demo: 'lock',
+    },
+  ];
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal-content tutorial-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <div>
+            <div className="eyebrow">PILOT MANUAL</div>
+            <h2>HOW TO PLAY VOLT//SHIFT</h2>
+          </div>
+          <button className="close-btn" onClick={onClose}>×</button>
+        </div>
+
+        {/* Step Indicator Tabs */}
+        <div className="tutorial-tabs">
+          {steps.map((s, idx) => (
+            <button
+              key={idx}
+              className={`tutorial-tab ${activeTab === idx ? 'active' : ''}`}
+              onClick={() => {
+                Sound.playClick();
+                setActiveTab(idx);
+              }}
+            >
+              <span className="tab-num">{idx + 1}</span>
+              <span className="tab-label">{s.badge}</span>
+            </button>
+          ))}
+        </div>
+
+        {/* Step Content Card with Animated Interactive Simulation */}
+        <div className="tutorial-body">
+          <div className="tutorial-text-block">
+            <h3>{steps[activeTab].title}</h3>
+            <p>{steps[activeTab].text}</p>
+          </div>
+
+          <div className={`tutorial-demo-stage demo-${steps[activeTab].demo}`}>
+            <div className="demo-canvas">
+              <div className="demo-craft" />
+              <div className="demo-node demo-node-primary" />
+              <div className="demo-node demo-node-secondary" />
+              <div className="demo-shockwave" />
+            </div>
+            <div className="demo-caption">
+              {activeTab === 0 && '▲ Use WASD or touch joystick to close in on nodes'}
+              {activeTab === 1 && '▲ Capturing power triggers an arena-wide kinetic shockwave'}
+              {activeTab === 2 && '▲ Contest countdown ring: dive in to steal rival power'}
+              {activeTab === 3 && '▲ 60-second timer: first pilot to win 2 rounds wins the series'}
+            </div>
+          </div>
+        </div>
+
+        {/* Energy Types Quick Reference */}
+        <div className="energy-legend-grid">
+          <div className="legend-item">
+            <span className="legend-icon" style={{ color: '#00f0ff' }}>⚡</span>
+            <div><b>VOLT CORE</b><span>+10 pts · Standard Shift</span></div>
+          </div>
+          <div className="legend-item">
+            <span className="legend-icon" style={{ color: '#ff9900' }}>💥</span>
+            <div><b>SURGE CORE</b><span>+15 pts · Super Shockwave</span></div>
+          </div>
+          <div className="legend-item">
+            <span className="legend-icon" style={{ color: '#05ffa1' }}>🛡️</span>
+            <div><b>ANCHOR CORE</b><span>+10 pts · 1.6s Fast Lock</span></div>
+          </div>
+          <div className="legend-item">
+            <span className="legend-icon" style={{ color: '#bf55ec' }}>🌀</span>
+            <div><b>VOID RIFT</b><span>+20 pts · High Risk & Steal Penalty</span></div>
+          </div>
+        </div>
+
+        <div className="tutorial-footer">
+          {activeTab < steps.length - 1 ? (
+            <button
+              className="primary-btn full-width"
+              onClick={() => {
+                Sound.playClick();
+                setActiveTab((prev) => prev + 1);
+              }}
+            >
+              NEXT: {steps[activeTab + 1].badge} →
+            </button>
+          ) : (
+            <button className="primary-btn full-width" onClick={onClose}>
+              READY FOR COMBAT — ENTER ARENA
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 
